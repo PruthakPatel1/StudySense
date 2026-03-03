@@ -1,1 +1,1 @@
-# StudySense
+# StudySense - MUC
