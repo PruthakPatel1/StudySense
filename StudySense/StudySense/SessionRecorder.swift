@@ -12,37 +12,37 @@ import Combine
 final class SessionRecorder: ObservableObject {
     
     let motion = MotionManager() //MotionManager
-
+    
     @Published var isRunning = false
     @Published var isPaused = false
     @Published var elapsedTime: TimeInterval = 0
     @Published var totalDistractionTime: TimeInterval = 0
     @Published var distractionCount: Int = 0
-
+    
     private var startDate: Date?
     private var pausedTime: TimeInterval = 0
     private var timer: Timer?
-
+    
     // MARK: - Start
     func start() {
         guard !isRunning else { return }
-
+        
         isRunning = true
         isPaused = false
         elapsedTime = 0
         pausedTime = 0
         startDate = Date()
-
+        
         startTimer()
         
         totalDistractionTime = 0
         distractionCount = 0
-
+        
         motion.onDistractionStart = { [weak self] in
             guard let self else { return }
             self.distractionCount += 1
         }
-
+        
         motion.onDistractionEnd = { [weak self] duration in
             guard let self else { return }
             self.totalDistractionTime += duration
@@ -50,11 +50,11 @@ final class SessionRecorder: ObservableObject {
         
         motion.startUpdates(hz: 50) //MotionManager
     }
-
+    
     // MARK: - Pause
     func pause() {
         guard isRunning, !isPaused else { return }
-
+        
         isPaused = true
         pausedTime = elapsedTime
         timer?.invalidate()
@@ -62,18 +62,18 @@ final class SessionRecorder: ObservableObject {
         
         motion.stopUpdates() //MotionManger
     }
-
+    
     // MARK: - Resume
     func resume() {
         guard isRunning, isPaused else { return }
-
+        
         isPaused = false
         startDate = Date().addingTimeInterval(-pausedTime)
         startTimer()
         
         motion.startUpdates(hz: 50) //MotionManager
     }
-
+    
     // MARK: - Stop
     func stop() {
         isRunning = false
@@ -86,14 +86,14 @@ final class SessionRecorder: ObservableObject {
         
         motion.stopUpdates() //MotionManager
     }
-
+    
     private func startTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self, let startDate = self.startDate else { return }
             self.elapsedTime = Date().timeIntervalSince(startDate)
         }
     }
-
+    
     // MARK: - Formatted Time
     var formattedTime: String {
         let totalSeconds = Int(elapsedTime)
