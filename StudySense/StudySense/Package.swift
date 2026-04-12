@@ -20,6 +20,7 @@ let package = Package(
             bundleVersion: "1",
             appIcon: .placeholder(icon: .box),
             accentColor: .presetColor(.orange),
+            additionalInfoPlistContentFilePath: "MoreInfo.plist",
             supportedDeviceFamilies: [
                 .pad,
                 .phone

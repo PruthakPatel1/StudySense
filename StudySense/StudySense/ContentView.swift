@@ -5,24 +5,37 @@
 //  Created by Pruthak Patel on 2/26/26.
 //
 
-import SwiftUI
+internal import SwiftUI
+import AudioToolbox
 
 // MARK: - Root
 
 struct ContentView: View {
 
     @StateObject private var recorder = SessionRecorder()
+    @StateObject private var store = SessionStore()
+    @StateObject private var achievements = AchievementStore()
     @State private var appView: AppView = .home
     @State private var navTab: NavTab   = .timer
 
     enum AppView { case home, activeSession, postSession }
     enum NavTab: CaseIterable {
-        case timer, analytics, settings
+        case timer, analytics, profile, settings
         var label: String {
-            switch self { case .timer: "Timer"; case .analytics: "Analytics"; case .settings: "Settings" }
+            switch self {
+            case .timer: "Timer"
+            case .analytics: "Analytics"
+            case .profile: "Profile"
+            case .settings: "Settings"
+            }
         }
         var icon: String {
-            switch self { case .timer: "timer"; case .analytics: "chart.bar"; case .settings: "gearshape" }
+            switch self {
+            case .timer: "timer"
+            case .analytics: "chart.bar"
+            case .profile: "person.crop.circle"
+            case .settings: "gearshape"
+            }
         }
     }
 
@@ -47,6 +60,19 @@ struct ContentView: View {
                 }
             }
         }
+        .overlay(alignment: .top) {
+            if let first = achievements.newlyUnlocked.first {
+                AchievementToast(achievement: first)
+                    .padding(.top, 60)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .onAppear {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            withAnimation { achievements.newlyUnlocked = [] }
+                        }
+                    }
+                    .animation(.spring(), value: achievements.newlyUnlocked.isEmpty)
+            }
+        }
         .preferredColorScheme(.dark)
         .animation(.easeInOut(duration: 0.25), value: appView)
     }
@@ -55,11 +81,12 @@ struct ContentView: View {
     private var mainContent: some View {
         switch appView {
         case .postSession:
-            PostSessionView(recorder: recorder, appView: $appView, navTab: $navTab)
+            PostSessionView(recorder: recorder, appView: $appView, navTab: $navTab, store: store, achievements: achievements)
         default:
             switch navTab {
             case .timer:     HomeView(recorder: recorder, appView: $appView)
-            case .analytics: AnalyticsView()
+            case .analytics: AnalyticsView(store: store)
+            case .profile:   ProfileView(store: store, achievements: achievements)
             case .settings:  SettingsView()
             }
         }
@@ -192,7 +219,10 @@ struct HomeView: View {
             Spacer()
 
             Button {
-                recorder.start()
+                let duration = mode == .timer
+                    ? TimeInterval(timerMinutes * 60 + timerSeconds)
+                    : 0
+                recorder.start(timerDuration: duration)
                 appView = .activeSession
             } label: {
                 HStack(spacing: 12) {
@@ -201,6 +231,8 @@ struct HomeView: View {
                 }
             }
             .primaryButton()
+            .disabled(mode == .timer && timerMinutes == 0 && timerSeconds == 0)
+            .opacity(mode == .timer && timerMinutes == 0 && timerSeconds == 0 ? 0.4 : 1.0)
             .padding(.horizontal, 24)
             .padding(.bottom, 110)
         }
@@ -215,6 +247,7 @@ struct ActiveSessionView: View {
     @Binding var appView: ContentView.AppView
 
     @State private var breathing = false
+    @State private var showTimerCompleteAlert = false
 
     var body: some View {
         ZStack {
@@ -223,14 +256,40 @@ struct ActiveSessionView: View {
             VStack {
                 // Elapsed time — subtle header
                 VStack(spacing: 4) {
-                    Text("SESSION ACTIVE")
+                    Text(recorder.isTimerMode ? "TIME REMAINING" : "SESSION ACTIVE")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.textDim)
                         .tracking(4)
-                    Text(recorder.formattedTime)
-                        .font(.system(size: 24, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundColor(.textDim)
+
+                    if recorder.isTimerMode {
+                        ZStack {
+                            // Background track
+                            Circle()
+                                .stroke(Color.surfaceMid, lineWidth: 3)
+                                .frame(width: 120, height: 120)
+                            // Progress arc (drains clockwise)
+                            Circle()
+                                .trim(from: 0, to: CGFloat(1 - recorder.timerProgress))
+                                .stroke(Color.brandPrimary, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                                .frame(width: 120, height: 120)
+                                .rotationEffect(.degrees(-90))
+                                .animation(.linear(duration: 0.1), value: recorder.timerProgress)
+                            // Countdown text inside ring
+                            Text(recorder.formattedRemainingTime)
+                                .font(.system(size: 32, weight: .semibold))
+                                .monospacedDigit()
+                                .foregroundColor(.textMain)
+                        }
+                        // Elapsed underneath in dim text
+                        Text("Elapsed: \(recorder.formattedTime)")
+                            .font(.system(size: 12))
+                            .foregroundColor(.textDim)
+                    } else {
+                        Text(recorder.formattedTime)
+                            .font(.system(size: 24, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundColor(.textDim)
+                    }
                 }
                 .padding(.top, 64)
 
@@ -240,15 +299,45 @@ struct ActiveSessionView: View {
                 VStack(spacing: 24) {
                     Image(systemName: "iphone")
                         .font(.system(size: 48))
-                        .foregroundColor(recorder.motion.isDistracted ? .brandWarning : .textDim)
+                        .foregroundColor(statusColor)
                         .rotationEffect(.degrees(180))
                         .opacity(breathing ? 0.4 : 0.2)
                         .scaleEffect(breathing ? 1.1 : 1.0)
 
-                    Text(recorder.motion.isDistracted ? "Distracted!" : "Phone face down to focus.")
+                    Text(statusText)
                         .font(.system(size: 16, weight: .regular))
-                        .foregroundColor(recorder.motion.isDistracted ? .brandWarning : .textDim)
-                        .animation(.easeInOut(duration: 0.3), value: recorder.motion.isDistracted)
+                        .foregroundColor(statusColor)
+                        .animation(.easeInOut(duration: 0.3), value: recorder.phoneState)
+                }
+                
+                var statusText: String {
+                    if recorder.isPaused {
+                        return "Session Paused"
+                    }
+                    
+                    switch recorder.phoneState {
+                    case .focused:
+                        return "Focused"
+                    case .potentiallyDistracted:
+                        return "Potential distraction"
+                    case .distracted:
+                        return "Distracted"
+                    }
+                }
+
+                var statusColor: Color {
+                    if recorder.isPaused {
+                        return .textDim
+                    }
+                    
+                    switch recorder.phoneState {
+                    case .focused:
+                        return .brandSecondary
+                    case .potentiallyDistracted:
+                        return .brandWarning
+                    case .distracted:
+                        return .brandWarning
+                    }
                 }
 
                 Spacer()
@@ -270,7 +359,7 @@ struct ActiveSessionView: View {
 
                     // Stop Session
                     Button {
-                        if !recorder.isPaused { recorder.pause() }
+                        recorder.finishSession()
                         appView = .postSession
                     } label: {
                         HStack(spacing: 8) {
@@ -283,10 +372,34 @@ struct ActiveSessionView: View {
                 .padding(.bottom, 64)
             }
         }
+        .onChange(of: recorder.timerDidComplete) { completed in
+            if completed {
+                showTimerCompleteAlert = true
+                // Vibrate
+                AudioToolbox.AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                // Repeat vibration after 1s for emphasis
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    AudioToolbox.AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                }
+            }
+        }
+        .alert("Time's Up!", isPresented: $showTimerCompleteAlert) {
+            Button("End Session") {
+                recorder.finishSession()
+                appView = .postSession
+            }
+            Button("Keep Going") {
+                recorder.resume()
+                recorder.isTimerMode = false  // switch to stopwatch mode
+            }
+        } message: {
+            Text("Your focus session is complete.")
+        }
         .onAppear {
             withAnimation(.easeInOut(duration: 4).repeatForever(autoreverses: true)) {
                 breathing = true
             }
+    
         }
     }
 }
@@ -297,8 +410,10 @@ struct PostSessionView: View {
     @ObservedObject var recorder: SessionRecorder
     @Binding var appView: ContentView.AppView
     @Binding var navTab: ContentView.NavTab
+    var store: SessionStore
+    var achievements: AchievementStore
 
-    @State private var title: String = PostSessionView.makeTitle()
+    @State private var title: String = ""
     @State private var isEditing = false
 
     static func makeTitle() -> String {
@@ -313,22 +428,47 @@ struct PostSessionView: View {
         return "\(days[weekday - 1]) \(period) Focus"
     }
 
-    var focusScore: Int {
-        guard recorder.elapsedTime > 0 else { return 0 }
-        let focused = max(0, recorder.elapsedTime - recorder.totalDistractionTime)
-        return Int((focused / recorder.elapsedTime) * 100)
+    private var rawFocused: Double {
+        recorder.totalFocusedTime
     }
 
-    var focusPercent: CGFloat {
-        guard recorder.elapsedTime > 0 else { return 1 }
-        return CGFloat(max(0, recorder.elapsedTime - recorder.totalDistractionTime) / recorder.elapsedTime)
+    private var rawPotential: Double {
+        recorder.totalPotentialDistractionTime
+    }
+
+    private var rawDistracted: Double {
+        recorder.totalDistractionTime
+    }
+
+    private var totalTracked: Double {
+        let total = rawFocused + rawPotential + rawDistracted
+        return total > 0 ? total : 1
+    }
+
+    var focusedPercent: CGFloat {
+        CGFloat(rawFocused / totalTracked)
+    }
+
+    var potentialPercent: CGFloat {
+        CGFloat(rawPotential / totalTracked)
     }
 
     var distractedPercent: CGFloat {
-        guard recorder.elapsedTime > 0 else { return 0 }
-        return CGFloat(min(1, recorder.totalDistractionTime / recorder.elapsedTime))
+        CGFloat(rawDistracted / totalTracked)
+    }
+    
+    private var focusedDisplayPercent: Int {
+        Int((Double(focusedPercent) * 100).rounded())
     }
 
+    private var potentialDisplayPercent: Int {
+        Int((Double(potentialPercent) * 100).rounded())
+    }
+
+    private var distractedDisplayPercent: Int {
+        max(0, 100 - focusedDisplayPercent - potentialDisplayPercent)
+    }
+    
     var formattedDistractionTime: String {
         let t = Int(recorder.totalDistractionTime)
         return String(format: "%02d:%02d", t / 60, t % 60)
@@ -372,7 +512,7 @@ struct PostSessionView: View {
                         .padding(.bottom, 4)
 
                     HStack(alignment: .bottom, spacing: 2) {
-                        Text("\(focusScore)")
+                        Text("\(recorder.focusScore)")
                             .font(.system(size: 72, weight: .semibold))
                             .monospacedDigit()
                             .foregroundColor(.textInverse)
@@ -385,16 +525,21 @@ struct PostSessionView: View {
 
                     // Focus / Distracted bar
                     GeometryReader { geo in
-                        let gap: CGFloat = distractedPercent > 0 ? 2 : 0
-                        let available = geo.size.width - gap
+                        let segments = [
+                            (color: Color(hex: "22C55E"), value: focusedPercent),     // green
+                            (color: Color.orange, value: potentialPercent),           // orange
+                            (color: Color.red, value: distractedPercent)              // red
+                        ].filter { $0.value > 0 }
+                        
+                        let gap: CGFloat = segments.count > 1 ? 2 : 0
+                        let totalGap = CGFloat(max(0, segments.count - 1)) * gap
+                        let available = geo.size.width - totalGap
+                        
                         HStack(spacing: gap) {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color(hex: "22C55E"))
-                                .frame(width: available * focusPercent)
-                            if distractedPercent > 0 {
+                            ForEach(0..<segments.count, id: \.self) { index in
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.brandWarning)
-                                    .frame(width: available * distractedPercent)
+                                    .fill(segments[index].color)
+                                    .frame(width: available * segments[index].value)
                             }
                         }
                     }
@@ -403,8 +548,9 @@ struct PostSessionView: View {
 
                     // Legend
                     HStack(spacing: 16) {
-                        LegendDot(color: Color(hex: "22C55E"), label: "Focus \(Int(focusPercent * 100))%")
-                        LegendDot(color: Color.brandWarning, label: "Distracted \(Int(distractedPercent * 100))%")
+                        LegendDot(color: Color(hex: "22C55E"), label: "Focused \(focusedDisplayPercent)%")
+                        LegendDot(color: Color.orange, label: "Partial \(potentialDisplayPercent)%")
+                        LegendDot(color: Color.red, label: "Distracted \(distractedDisplayPercent)%")
                     }
                 }
                 .padding(28)
@@ -421,13 +567,39 @@ struct PostSessionView: View {
                 .padding(.bottom, 12)
 
                 // Distracted Time (backend addition)
-                StatCard(icon: "timer", label: "Distracted Time", value: formattedDistractionTime, valueColor: .brandWarning)
-                    .frame(maxWidth: .infinity)
-                    .padding(.bottom, 32)
+                VStack(spacing: 12) {
+                    StatCard(
+                        icon: "eye",
+                        label: "Potentially Distracted",
+                        value: recorder.formattedPotentialDistractionTime,
+                        valueColor: .brandWarning
+                    )
+                    
+                    StatCard(
+                        icon: "timer",
+                        label: "Distracted Time",
+                        value: recorder.formattedDistractionTime,
+                        valueColor: .brandWarning
+                    )
+                }
+                .padding(.bottom, 32)
 
                 // Done
                 Button {
-                    recorder.stop()
+                    let session = StudySession(
+                        id: UUID(),
+                        date: Date(),
+                        name: title,
+                        elapsedTime: recorder.elapsedTime,
+                        focusedTime: recorder.totalFocusedTime,
+                        potentialDistractionTime: recorder.totalPotentialDistractionTime,
+                        distractionTime: recorder.totalDistractionTime,
+                        distractionCount: recorder.distractionCount,
+                        focusScore: recorder.focusScore
+                    )
+                    store.save(session)
+                    achievements.evaluate(against: store)
+                    recorder.reset()
                     navTab  = .timer
                     appView = .home
                 } label: {
@@ -438,34 +610,18 @@ struct PostSessionView: View {
             }
             .padding(.horizontal, 20)
         }
+        .onAppear {
+            if title.isEmpty {
+                title = PostSessionView.makeTitle()
+            }
+        }
     }
 }
 
 // MARK: - VIEW 4: ANALYTICS
 
 struct AnalyticsView: View {
-
-    // Placeholder heatmap — static so it doesn't regenerate on re-renders
-    static let heatmapData: [[Int]] = {
-        (0..<15).map { _ in
-            (0..<7).map { _ -> Int in
-                let r = Double.random(in: 0..<1)
-                if r < 0.30 { return 0 }
-                if r < 0.55 { return 1 }
-                if r < 0.75 { return 2 }
-                if r < 0.90 { return 3 }
-                return 4
-            }
-        }
-    }()
-
-    static let recentSessions: [(date: String, name: String, score: Int, duration: String)] = [
-        ("Today",      "Friday Afternoon Focus",     92, "45m"),
-        ("Yesterday",  "Thursday Night Study",        78, "60m"),
-        ("Feb 12",     "Wednesday Morning Flow",      85, "30m"),
-        ("Feb 11",     "Tuesday Evening Focus",       64, "25m"),
-        ("Feb 10",     "Monday Afternoon Push",       91, "50m"),
-    ]
+    @ObservedObject var store: SessionStore
 
     let heatmapColors: [Color] = [
         .bgSurface,
@@ -497,9 +653,18 @@ struct AnalyticsView: View {
 
                 // Quick stats row
                 HStack(spacing: 12) {
-                    MiniStatCard(icon: "flame", iconColor: .brandWarning, label: "Streak", value: "5 days")
-                    MiniStatCard(icon: "chart.line.uptrend.xyaxis", iconColor: .brandSecondary, label: "Avg Score", value: "82%")
-                    MiniStatCard(icon: nil, iconColor: .clear, label: "Sessions", value: "47")
+                    MiniStatCard(icon: "flame",
+                                 iconColor: .brandWarning,
+                                 label: "Streak",
+                                 value: "\(store.streak) day\(store.streak == 1 ? "" : "s")")
+                    MiniStatCard(icon: "chart.line.uptrend.xyaxis",
+                                 iconColor: .brandSecondary,
+                                 label: "Avg Score",
+                                 value: store.sessions.isEmpty ? "--" : "\(store.averageScore)%")
+                    MiniStatCard(icon: nil,
+                                 iconColor: .clear,
+                                 label: "Sessions",
+                                 value: "\(store.totalSessions)")
                 }
                 .padding(.bottom, 24)
 
@@ -514,13 +679,14 @@ struct AnalyticsView: View {
                         .foregroundColor(.textMuted)
                         .padding(.bottom, 16)
 
+                    let heatmap = store.heatmapData
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 3) {
-                            ForEach(0..<AnalyticsView.heatmapData.count, id: \.self) { w in
+                            ForEach(0..<heatmap.count, id: \.self) { w in
                                 VStack(spacing: 3) {
-                                    ForEach(0..<AnalyticsView.heatmapData[w].count, id: \.self) { d in
+                                    ForEach(0..<heatmap[w].count, id: \.self) { d in
                                         RoundedRectangle(cornerRadius: 4)
-                                            .fill(heatmapColors[AnalyticsView.heatmapData[w][d]])
+                                            .fill(heatmapColors[heatmap[w][d]])
                                             .frame(width: 18, height: 18)
                                     }
                                 }
@@ -529,7 +695,6 @@ struct AnalyticsView: View {
                     }
                     .padding(.bottom, 12)
 
-                    // Legend
                     HStack(spacing: 8) {
                         Text("Less").font(.system(size: 12)).foregroundColor(.textMuted)
                         ForEach(0..<5) { i in
@@ -551,29 +716,36 @@ struct AnalyticsView: View {
                     .foregroundColor(.textMain)
                     .padding(.bottom, 12)
 
-                VStack(spacing: 12) {
-                    ForEach(AnalyticsView.recentSessions, id: \.name) { session in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(session.date)
-                                    .font(.system(size: 12)).foregroundColor(.textMuted)
-                                Text(session.name)
-                                    .font(.system(size: 14, weight: .medium)).foregroundColor(.textMain)
-                                Text(session.duration)
-                                    .font(.system(size: 12)).foregroundColor(.textMuted)
+                if store.sessions.isEmpty {
+                    Text("No sessions yet. Complete a focus session to see your history here.")
+                        .font(.system(size: 14))
+                        .foregroundColor(.textMuted)
+                        .padding(.bottom, 24)
+                } else {
+                    VStack(spacing: 12) {
+                        ForEach(store.sessions.prefix(20)) { session in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(session.formattedDate)
+                                        .font(.system(size: 12)).foregroundColor(.textMuted)
+                                    Text(session.name)
+                                        .font(.system(size: 14, weight: .medium)).foregroundColor(.textMain)
+                                    Text(session.formattedDuration)
+                                        .font(.system(size: 12)).foregroundColor(.textMuted)
+                                }
+                                Spacer()
+                                Text("\(session.focusScore)%")
+                                    .font(.system(size: 24, weight: .semibold))
+                                    .monospacedDigit()
+                                    .foregroundColor(scoreColor(session.focusScore))
                             }
-                            Spacer()
-                            Text("\(session.score)%")
-                                .font(.system(size: 24, weight: .semibold))
-                                .monospacedDigit()
-                                .foregroundColor(scoreColor(session.score))
+                            .padding(20)
+                            .background(Color.bgSurface)
+                            .cornerRadius(32)
                         }
-                        .padding(20)
-                        .background(Color.bgSurface)
-                        .cornerRadius(32)
                     }
+                    .padding(.bottom, 110)
                 }
-                .padding(.bottom, 110)
             }
             .padding(.horizontal, 20)
             .padding(.top, 56)
@@ -765,5 +937,34 @@ struct SettingLinkRow: View {
         }
         .padding(.vertical, 16)
         .padding(.horizontal, 20)
+    }
+}
+
+struct AchievementToast: View {
+    let achievement: Achievement
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: achievement.icon)
+                .font(.system(size: 18))
+                .foregroundColor(.textInverse)
+                .frame(width: 40, height: 40)
+                .background(Color.textInverse.opacity(0.2))
+                .cornerRadius(10)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Achievement Unlocked!")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.textInverse.opacity(0.7))
+                Text(achievement.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.textInverse)
+            }
+            Spacer()
+        }
+        .padding(16)
+        .background(Color.brandPrimary)
+        .cornerRadius(20)
+        .padding(.horizontal, 20)
+        .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
     }
 }

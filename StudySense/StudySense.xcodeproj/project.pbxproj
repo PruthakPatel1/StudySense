@@ -29,9 +29,22 @@
 		893D40092F5133D4005305D4 /* StudySenseUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StudySenseUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		89F4C3BA2F57C2A8005D37F9 /* Exceptions for "StudySense" folder in "StudySense" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Package.swift,
+			);
+			target = 893D3FF12F5133D2005305D4 /* StudySense */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		893D3FF42F5133D2005305D4 /* StudySense */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				89F4C3BA2F57C2A8005D37F9 /* Exceptions for "StudySense" folder in "StudySense" target */,
+			);
 			path = StudySense;
 			sourceTree = "<group>";
 		};
@@ -398,6 +411,7 @@
 				DEVELOPMENT_TEAM = LXXVDXDL82;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "StudySense uses the camera to estimate ambient light during focus sessions.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -431,6 +445,7 @@
 				DEVELOPMENT_TEAM = LXXVDXDL82;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "StudySense uses the camera to estimate ambient light during focus sessions.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
