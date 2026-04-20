@@ -87,6 +87,11 @@ final class AchievementStore: ObservableObject {
 
         persist()
     }
+    // MARK: - Delete Achievement progress
+    func resetAll() {
+        achievements = AchievementStore.defaultAchievements
+        persist()
+    }
 
     // MARK: - Weekly progress
 
@@ -142,3 +147,4 @@ final class AchievementStore: ObservableObject {
         Achievement(id: "consistency_week",  title: "Iron Habit",    description: "Study every day for 7 days straight",  icon: "repeat.circle.fill"),
     ]
 }
+

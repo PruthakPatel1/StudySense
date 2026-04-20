@@ -60,6 +60,11 @@ final class SessionStore: ObservableObject {
         sessions.remove(atOffsets: offsets)
         persist()
     }
+    
+    func deleteAll() {
+        sessions = []
+        persist()
+    }
 
     // MARK: - Computed analytics
 

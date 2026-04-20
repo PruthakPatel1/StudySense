@@ -7,6 +7,8 @@
 
 internal import SwiftUI
 import AudioToolbox
+import AVFoundation
+import CoreMotion
 
 // MARK: - Root
 
@@ -87,7 +89,7 @@ struct ContentView: View {
             case .timer:     HomeView(recorder: recorder, appView: $appView)
             case .analytics: AnalyticsView(store: store)
             case .profile:   ProfileView(store: store, achievements: achievements)
-            case .settings:  SettingsView()
+            case .settings: SettingsView(store: store, achievements: achievements)
             }
         }
     }
@@ -140,7 +142,7 @@ struct HomeView: View {
     @State private var timerSeconds = 0
 
     var subtitle: String {
-        mode == .stopwatch ? "Place your phone face down to begin" : "Set your focus duration"
+        mode == .stopwatch ? "Press start and place your phone face down to begin" : "Set your focus duration, press start, and place your phone face down"
     }
 
     var body: some View {
@@ -245,6 +247,7 @@ struct HomeView: View {
 struct ActiveSessionView: View {
     @ObservedObject var recorder: SessionRecorder
     @Binding var appView: ContentView.AppView
+    @AppStorage("settings.haptics") private var hapticsEnabled = true
 
     @State private var breathing = false
     @State private var showTimerCompleteAlert = false
@@ -376,10 +379,11 @@ struct ActiveSessionView: View {
             if completed {
                 showTimerCompleteAlert = true
                 // Vibrate
-                AudioToolbox.AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
-                // Repeat vibration after 1s for emphasis
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                if hapticsEnabled {
                     AudioToolbox.AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        AudioToolbox.AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                    }
                 }
             }
         }
@@ -756,58 +760,72 @@ struct AnalyticsView: View {
 // MARK: - VIEW 5: SETTINGS
 
 struct SettingsView: View {
-    @State private var notifications = true
-    @State private var haptics       = true
-    @State private var dnd           = false
-
+    @AppStorage("settings.notifications") private var notifications = true
+    @AppStorage("settings.haptics")       private var haptics       = true
+    @AppStorage("settings.dnd")           private var dnd           = false
+    
+    var store: SessionStore
+    var achievements: AchievementStore
+    
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-
-                // Header
-                Text("Settings")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundColor(.textMain)
-                    .padding(.bottom, 4)
-                Text("Customize your focus experience")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(.textMuted)
-                    .padding(.bottom, 24)
-
-                // General
-                VStack(spacing: 0) {
-                    SettingToggleRow(icon: "bell",  label: "Notifications",  description: "Session reminders",       isOn: $notifications)
-                    Divider().background(Color.surfaceMid).padding(.horizontal, 20)
-                    SettingToggleRow(icon: "iphone.radiowaves.left.and.right", label: "Haptic Feedback", description: "Vibrations on interactions", isOn: $haptics)
-                    Divider().background(Color.surfaceMid).padding(.horizontal, 20)
-                    SettingToggleRow(icon: "moon",  label: "Do Not Disturb", description: "Silence during sessions", isOn: $dnd)
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    
+                    // Header
+                    Text("Settings")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundColor(.textMain)
+                        .padding(.bottom, 4)
+                    Text("Customize your focus experience")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundColor(.textMuted)
+                        .padding(.bottom, 24)
+                    
+                    // General
+                    VStack(spacing: 0) {
+                        SettingToggleRow(icon: "bell",  label: "Notifications",  description: "Session reminders",       isOn: $notifications)
+                        Divider().background(Color.surfaceMid).padding(.horizontal, 20)
+                        SettingToggleRow(icon: "iphone.radiowaves.left.and.right", label: "Haptic Feedback", description: "Vibrations on interactions", isOn: $haptics)
+                        Divider().background(Color.surfaceMid).padding(.horizontal, 20)
+                        SettingToggleRow(icon: "moon",  label: "Do Not Disturb", description: "Silence during sessions", isOn: $dnd)
+                    }
+                    .background(Color.bgSurface)
+                    .cornerRadius(32)
+                    .padding(.bottom, 16)
+                    
+                    // More
+                    VStack(spacing: 0) {
+                        
+                        NavigationLink {
+                            PrivacyView(store: store, achievements: achievements).navigationBarBackButtonHidden(false)
+                        } label: {
+                            SettingLinkRowLabel(icon: "shield", label: "Privacy", description: "Data & permissions")
+                        }
+                        Divider().background(Color.surfaceMid).padding(.horizontal, 20)
+                        
+                        NavigationLink {
+                            AboutView().navigationBarBackButtonHidden(false)
+                        } label: {
+                            SettingLinkRowLabel(icon: "info.circle", label: "About", description: "Version 1.0.0")
+                        }
+                    }
+                    .background(Color.bgSurface)
+                    .cornerRadius(32)
+                    
+                    Text("StudySense v1.0.0")
+                        .font(.system(size: 12))
+                        .foregroundColor(.textMuted.opacity(0.5))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 32)
+                        .padding(.bottom, 110)
                 }
-                .background(Color.bgSurface)
-                .cornerRadius(32)
-                .padding(.bottom, 16)
-
-                // More
-                VStack(spacing: 0) {
-                    SettingLinkRow(icon: "shield",       label: "Privacy", description: "Data & permissions")
-                    Divider().background(Color.surfaceMid).padding(.horizontal, 20)
-                    SettingLinkRow(icon: "info.circle",  label: "About",   description: "Version 1.0.0")
-                }
-                .background(Color.bgSurface)
-                .cornerRadius(32)
-
-                Text("StudySense v1.0.0")
-                    .font(.system(size: 12))
-                    .foregroundColor(.textMuted.opacity(0.5))
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 32)
-                    .padding(.bottom, 110)
+                .padding(.horizontal, 20)
+                .padding(.top, 56)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 56)
         }
     }
 }
-
 // MARK: - Supporting Views
 
 struct StatCard: View {
@@ -913,7 +931,8 @@ struct SettingToggleRow: View {
     }
 }
 
-struct SettingLinkRow: View {
+// Rename and remove the chevron:
+struct SettingLinkRowLabel: View {
     let icon: String
     let label: String
     let description: String
@@ -927,8 +946,8 @@ struct SettingLinkRow: View {
                 .background(Color.surfaceMid)
                 .cornerRadius(10)
             VStack(alignment: .leading, spacing: 2) {
-                Text(label)       .font(.system(size: 14, weight: .medium)).foregroundColor(.textMain)
-                Text(description) .font(.system(size: 12)).foregroundColor(.textMuted)
+                Text(label).font(.system(size: 14, weight: .medium)).foregroundColor(.textMain)
+                Text(description).font(.system(size: 12)).foregroundColor(.textMuted)
             }
             Spacer()
             Image(systemName: "chevron.right")
@@ -966,5 +985,376 @@ struct AchievementToast: View {
         .cornerRadius(20)
         .padding(.horizontal, 20)
         .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+    }
+}
+
+struct PrivacyView: View {
+    @AppStorage("studysense.sessions") private var sessionsData: Data = Data()
+    @AppStorage("studysense.achievements") private var achievementsData: Data = Data()
+
+    @State private var cameraStatus: String = ""
+    @State private var motionAvailable: Bool = false
+    @State private var showDeleteConfirm = false
+
+    var store: SessionStore
+    var achievements: AchievementStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+
+                // Header
+                Text("Privacy")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(.textMain)
+                    .padding(.bottom, 4)
+                Text("How StudySense uses your data")
+                    .font(.system(size: 14))
+                    .foregroundColor(.textMuted)
+                    .padding(.bottom, 24)
+
+                // Data collection
+                VStack(alignment: .leading, spacing: 0) {
+                    PrivacySectionHeader(icon: "internaldrive", title: "Data Storage")
+                    Divider().background(Color.surfaceMid)
+                    PrivacyRow(
+                        icon: "iphone",
+                        title: "Stored Locally",
+                        description: "All session data, achievements, and settings are stored only on your device. Nothing is uploaded to any server."
+                    )
+                    Divider().background(Color.surfaceMid)
+                    PrivacyRow(
+                        icon: "person.slash",
+                        title: "No Account Required",
+                        description: "StudySense does not collect any personal information or require you to create an account."
+                    )
+                    Divider().background(Color.surfaceMid)
+                    PrivacyRow(
+                        icon: "chart.bar.xaxis",
+                        title: "No Analytics",
+                        description: "No third-party analytics or tracking SDKs are included in this app."
+                    )
+                }
+                .background(Color.bgSurface)
+                .cornerRadius(32)
+                .padding(.bottom, 16)
+
+                // Permissions
+                VStack(alignment: .leading, spacing: 0) {
+                    PrivacySectionHeader(icon: "lock.shield", title: "Permissions")
+                    Divider().background(Color.surfaceMid)
+                    PrivacyRow(
+                        icon: "camera",
+                        title: "Camera — \(cameraStatus)",
+                        description: "Used only to measure ambient light during a session to detect if your phone is face down. No photos or video are ever saved."
+                    )
+                    Divider().background(Color.surfaceMid)
+                    PrivacyRow(
+                        icon: "gyroscope",
+                        title: "Motion — \(motionAvailable ? "Available" : "Unavailable")",
+                        description: "Accelerometer and gyroscope data is used only during a session to detect movement. No motion data is stored or transmitted."
+                    )
+                    Divider().background(Color.surfaceMid)
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: "gear")
+                                .font(.system(size: 16))
+                                .foregroundColor(.textMuted)
+                                .frame(width: 36, height: 36)
+                                .background(Color.surfaceMid)
+                                .cornerRadius(10)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Open iOS Settings")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.brandPrimary)
+                                Text("Manage app permissions")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.textMuted)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12))
+                                .foregroundColor(.textMuted)
+                        }
+                        .padding(.vertical, 16)
+                        .padding(.horizontal, 20)
+                    }
+                }
+                .background(Color.bgSurface)
+                .cornerRadius(32)
+                .padding(.bottom, 16)
+
+                // Danger zone
+                VStack(alignment: .leading, spacing: 0) {
+                    PrivacySectionHeader(icon: "trash", title: "Data Management")
+                    Divider().background(Color.surfaceMid)
+                    Button {
+                        showDeleteConfirm = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "trash")
+                                .font(.system(size: 16))
+                                .foregroundColor(.red)
+                                .frame(width: 36, height: 36)
+                                .background(Color.red.opacity(0.15))
+                                .cornerRadius(10)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Delete All Data")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.red)
+                                Text("Permanently removes all sessions and achievements")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.textMuted)
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 16)
+                        .padding(.horizontal, 20)
+                    }
+                }
+                .background(Color.bgSurface)
+                .cornerRadius(32)
+                .padding(.bottom, 110)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 56)
+        }
+        .onAppear { refreshPermissionStatus() }
+        .alert("Delete All Data", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) {
+                store.deleteAll()
+                achievements.resetAll()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete all your sessions, achievements, and stats. This cannot be undone.")
+        }
+    }
+
+    private func refreshPermissionStatus() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:    cameraStatus = "Allowed"
+        case .denied:        cameraStatus = "Denied"
+        case .restricted:    cameraStatus = "Restricted"
+        case .notDetermined: cameraStatus = "Not Asked"
+        @unknown default:    cameraStatus = "Unknown"
+        }
+        motionAvailable = CMMotionManager().isDeviceMotionAvailable
+    }
+}
+
+struct PrivacySectionHeader: View {
+    let icon: String
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 13))
+                .foregroundColor(.textMuted)
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.textMuted)
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 20)
+    }
+}
+
+struct PrivacyRow: View {
+    let icon: String
+    let title: String
+    let description: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundColor(.textMuted)
+                .frame(width: 36, height: 36)
+                .background(Color.surfaceMid)
+                .cornerRadius(10)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.textMain)
+                Text(description)
+                    .font(.system(size: 12))
+                    .foregroundColor(.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 16)
+        .padding(.horizontal, 20)
+    }
+}
+
+
+struct AboutView: View {
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+
+                // Header
+                Text("About")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(.textMain)
+                    .padding(.bottom, 4)
+                Text("StudySense v1.0.0")
+                    .font(.system(size: 14))
+                    .foregroundColor(.textMuted)
+                    .padding(.bottom, 24)
+
+                // App hero block
+                VStack(spacing: 16) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 24)
+                            .fill(Color.brandPrimary)
+                            .frame(width: 80, height: 80)
+                        Image(systemName: "brain.head.profile")
+                            .font(.system(size: 36))
+                            .foregroundColor(.textInverse)
+                    }
+                    VStack(spacing: 6) {
+                        Text("StudySense")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundColor(.textMain)
+                        Text("Focus smarter, not harder.")
+                            .font(.system(size: 14))
+                            .foregroundColor(.textMuted)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(28)
+                .background(Color.bgSurface)
+                .cornerRadius(32)
+                .padding(.bottom, 16)
+
+                // Mission
+                VStack(alignment: .leading, spacing: 0) {
+                    PrivacySectionHeader(icon: "lightbulb", title: "Mission")
+                    Divider().background(Color.surfaceMid)
+                    Text("StudySense was built to help students understand their focus habits. By using your phone's sensors — not your attention — it quietly tracks when you're truly locked in versus when you've drifted, so you can study smarter over time.")
+                        .font(.system(size: 14))
+                        .foregroundColor(.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(20)
+                }
+                .background(Color.bgSurface)
+                .cornerRadius(32)
+                .padding(.bottom, 16)
+
+                // Credits
+                VStack(alignment: .leading, spacing: 0) {
+                    PrivacySectionHeader(icon: "person.2", title: "Credits")
+                    Divider().background(Color.surfaceMid)
+                    AboutRow(icon: "hammer.fill",    title: "Designed & Built by", value: "Pruthak Patel, Kunisha Dorasami, Sandro Karkusashvili, Samantha Nyazema")
+                    Divider().background(Color.surfaceMid)
+                    AboutRow(icon: "swift",           title: "Built with",          value: "SwiftUI")
+                    Divider().background(Color.surfaceMid)
+                    AboutRow(icon: "iphone.sensors.landscape", title: "Powered by", value: "CoreMotion & AVFoundation")
+                }
+                .background(Color.bgSurface)
+                .cornerRadius(32)
+                .padding(.bottom, 16)
+
+                // Links
+                VStack(alignment: .leading, spacing: 0) {
+                    PrivacySectionHeader(icon: "link", title: "Support")
+                    Divider().background(Color.surfaceMid)
+                    Link(destination: URL(string: "mailto:FakeEmail@FakeEmail.com")!) {
+                        HStack {
+                            Image(systemName: "envelope")
+                                .font(.system(size: 16))
+                                .foregroundColor(.textMuted)
+                                .frame(width: 36, height: 36)
+                                .background(Color.surfaceMid)
+                                .cornerRadius(10)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Contact Support")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.brandPrimary)
+                                Text("FakeEmail@FakeEmail.com")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.textMuted)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12))
+                                .foregroundColor(.textMuted)
+                        }
+                        .padding(.vertical, 16)
+                        .padding(.horizontal, 20)
+                    }
+                    Divider().background(Color.surfaceMid)
+                    Link(destination: URL(string: "https://apps.apple.com")!) {
+                        HStack {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.textMuted)
+                                .frame(width: 36, height: 36)
+                                .background(Color.surfaceMid)
+                                .cornerRadius(10)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Rate StudySense")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.brandPrimary)
+                                Text("Enjoying the app? Leave a review!")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.textMuted)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12))
+                                .foregroundColor(.textMuted)
+                        }
+                        .padding(.vertical, 16)
+                        .padding(.horizontal, 20)
+                    }
+                }
+                .background(Color.bgSurface)
+                .cornerRadius(32)
+                .padding(.bottom, 16)
+
+                Text("Made with ♥ by Pruthak Patel")
+                    .font(.system(size: 12))
+                    .foregroundColor(.textMuted.opacity(0.5))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.bottom, 110)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 56)
+        }
+    }
+}
+
+struct AboutRow: View {
+    let icon: String
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundColor(.textMuted)
+                .frame(width: 36, height: 36)
+                .background(Color.surfaceMid)
+                .cornerRadius(10)
+            Text(title)
+                .font(.system(size: 14))
+                .foregroundColor(.textMuted)
+            Spacer()
+            Text(value)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(.textMain)
+        }
+        .padding(.vertical, 16)
+        .padding(.horizontal, 20)
     }
 }
