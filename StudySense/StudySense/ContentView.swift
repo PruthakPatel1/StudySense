@@ -46,8 +46,13 @@ struct ContentView: View {
             Color.bgCanvas.ignoresSafeArea()
 
             if appView == .activeSession {
-                ActiveSessionView(recorder: recorder, appView: $appView)
-                    .transition(.opacity)
+                if recorder.isPomodoroMode {
+                    PomodoroSessionView(recorder: recorder, appView: $appView)
+                        .transition(.opacity)
+                } else {
+                    ActiveSessionView(recorder: recorder, appView: $appView)
+                        .transition(.opacity)
+                }
             } else {
                 ZStack(alignment: .bottom) {
                     mainContent
@@ -136,31 +141,41 @@ struct HomeView: View {
     @ObservedObject var recorder: SessionRecorder
     @Binding var appView: ContentView.AppView
 
-    enum HomeMode { case stopwatch, timer }
+    enum HomeMode { case stopwatch, timer, pomodoro }
     @State private var mode: HomeMode = .stopwatch
     @State private var timerMinutes = 25
-    @State private var timerSeconds = 0
+    @State private var pomodoroStudyMinutes = 25
+    @State private var pomodoroBreakMinutes = 5
 
     var subtitle: String {
-        mode == .stopwatch ? "Press start and place your phone face down to begin" : "Set your focus duration, press start, and place your phone face down"
+        switch mode {
+        case .stopwatch: return "Press start and place your phone face down to begin"
+        case .timer:     return "Set your focus duration, press start, and place your phone face down"
+        case .pomodoro:  return "Set study and break durations, press start, and place your phone face down"
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
 
-            // Mode Toggle — fixed at top so the time display never shifts
+            // Mode Toggle
             HStack(spacing: 0) {
-                ForEach([HomeMode.stopwatch, .timer], id: \.self) { m in
+                ForEach([HomeMode.stopwatch, .timer, .pomodoro], id: \.self) { m in
                     let isActive = mode == m
-                    Button(m == .stopwatch ? "Stopwatch" : "Timer") {
+                    let label: String = {
+                        switch m {
+                        case .stopwatch: return "Stopwatch"
+                        case .timer:     return "Timer"
+                        case .pomodoro:  return "Pomodoro"
+                        }
+                    }()
+                    Button(label) {
                         withAnimation(.easeInOut(duration: 0.2)) { mode = m }
-                        timerMinutes = m == .timer ? 25 : 0
-                        timerSeconds = 0
                     }
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(isActive ? .textInverse : .textMuted)
                     .padding(.vertical, 8)
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, isActive ? 16 : 14)
                     .background(isActive ? Color.brandPrimary : Color.clear)
                     .clipShape(Capsule())
                 }
@@ -179,62 +194,41 @@ struct HomeView: View {
                     .monospacedDigit()
                     .foregroundColor(.textMain)
                     .tracking(-2)
+            } else if mode == .timer {
+                TimerConfigView(minutes: $timerMinutes)
             } else {
-                HStack(alignment: .center, spacing: 12) {
-                    // Minutes
-                    VStack(spacing: 8) {
-                        Button { timerMinutes = min(99, timerMinutes + 1) } label: {
-                            Image(systemName: "chevron.up").foregroundColor(.textMuted)
-                        }
-                        Text(String(format: "%02d", timerMinutes))
-                            .font(.system(size: 96, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundColor(.textMain)
-                        Button { timerMinutes = max(0, timerMinutes - 1) } label: {
-                            Image(systemName: "chevron.down").foregroundColor(.textMuted)
-                        }
-                    }
-                    Text(":")
-                        .font(.system(size: 96, weight: .semibold))
-                        .foregroundColor(.textMuted)
-                    // Seconds
-                    VStack(spacing: 8) {
-                        Button { timerSeconds = timerSeconds >= 55 ? 0 : timerSeconds + 5 } label: {
-                            Image(systemName: "chevron.up").foregroundColor(.textMuted)
-                        }
-                        Text(String(format: "%02d", timerSeconds))
-                            .font(.system(size: 96, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundColor(.textMain)
-                        Button { timerSeconds = timerSeconds <= 0 ? 55 : timerSeconds - 5 } label: {
-                            Image(systemName: "chevron.down").foregroundColor(.textMuted)
-                        }
-                    }
-                }
+                // Pomodoro config
+                PomodoroConfigView(studyMinutes: $pomodoroStudyMinutes, breakMinutes: $pomodoroBreakMinutes)
             }
 
             Text(subtitle)
                 .font(.system(size: 14, weight: .regular))
                 .foregroundColor(.textMuted)
+                .multilineTextAlignment(.center)
                 .padding(.top, 24)
+                .padding(.horizontal, 32)
 
             Spacer()
 
             Button {
-                let duration = mode == .timer
-                    ? TimeInterval(timerMinutes * 60 + timerSeconds)
-                    : 0
-                recorder.start(timerDuration: duration)
+                if mode == .pomodoro {
+                    recorder.startPomodoro(studyMinutes: pomodoroStudyMinutes, breakMinutes: pomodoroBreakMinutes)
+                } else {
+                    let duration = mode == .timer
+                        ? TimeInterval(timerMinutes * 60)
+                        : 0
+                    recorder.start(timerDuration: duration)
+                }
                 appView = .activeSession
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "play.fill").font(.system(size: 16))
-                    Text("Start Focus")
+                    Text(mode == .pomodoro ? "Start Pomodoro" : "Start Focus")
                 }
             }
             .primaryButton()
-            .disabled(mode == .timer && timerMinutes == 0 && timerSeconds == 0)
-            .opacity(mode == .timer && timerMinutes == 0 && timerSeconds == 0 ? 0.4 : 1.0)
+            .disabled(mode == .timer && timerMinutes == 0)
+            .opacity(mode == .timer && timerMinutes == 0 ? 0.4 : 1.0)
             .padding(.horizontal, 24)
             .padding(.bottom, 110)
         }
@@ -242,7 +236,381 @@ struct HomeView: View {
     }
 }
 
-// MARK: - VIEW 2: ACTIVE SESSION
+// MARK: - Timer Config View
+
+struct TimerConfigView: View {
+    @Binding var minutes: Int
+
+    let presets = [15, 25, 30, 45, 60, 90]
+
+    var body: some View {
+        VStack(spacing: 28) {
+            // Preset chips
+            VStack(spacing: 12) {
+                HStack {
+                    Image(systemName: "clock")
+                        .foregroundColor(.brandPrimary)
+                        .font(.system(size: 14))
+                    Text("Focus Duration")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.textMuted)
+                }
+                // Two rows of 3
+                let rows = presets.chunked(into: 3)
+                ForEach(0..<rows.count, id: \.self) { rowIndex in
+                    HStack(spacing: 8) {
+                        ForEach(rows[rowIndex], id: \.self) { preset in
+                            let selected = minutes == preset
+                            Button("\(preset)m") {
+                                minutes = preset
+                            }
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(selected ? .textInverse : .textMuted)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity)
+                            .background(selected ? Color.brandPrimary : Color.bgSurface)
+                            .cornerRadius(14)
+                        }
+                    }
+                }
+            }
+
+            Rectangle()
+                .fill(Color.surfaceMid)
+                .frame(height: 1)
+                .padding(.horizontal, 16)
+
+            // Stepper
+            HStack(spacing: 24) {
+                Button { minutes = max(1, minutes - 5) } label: {
+                    Image(systemName: "minus")
+                        .foregroundColor(.textMuted)
+                        .frame(width: 44, height: 44)
+                        .background(Color.bgSurface)
+                        .clipShape(Circle())
+                }
+                Text("\(minutes) min")
+                    .font(.system(size: 40, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundColor(.textMain)
+                    .frame(minWidth: 130)
+                Button { minutes = min(180, minutes + 5) } label: {
+                    Image(systemName: "plus")
+                        .foregroundColor(.textMuted)
+                        .frame(width: 44, height: 44)
+                        .background(Color.bgSurface)
+                        .clipShape(Circle())
+                }
+            }
+        }
+        .padding(24)
+        .background(Color.bgSurface)
+        .cornerRadius(32)
+        .padding(.horizontal, 24)
+    }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
+    }
+}
+
+// MARK: - Pomodoro Config View
+
+struct PomodoroConfigView: View {
+    @Binding var studyMinutes: Int
+    @Binding var breakMinutes: Int
+
+    let studyPresets  = [15, 25, 30, 45, 50]
+    let breakPresets  = [5, 10, 15]
+
+    var body: some View {
+        VStack(spacing: 28) {
+            // Study duration
+            VStack(spacing: 12) {
+                HStack {
+                    Image(systemName: "brain.head.profile")
+                        .foregroundColor(.brandPrimary)
+                        .font(.system(size: 14))
+                    Text("Study Duration")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.textMuted)
+                }
+                HStack(spacing: 8) {
+                    ForEach(studyPresets, id: \.self) { preset in
+                        let selected = studyMinutes == preset
+                        Button("\(preset)m") {
+                            studyMinutes = preset
+                        }
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(selected ? .textInverse : .textMuted)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .background(selected ? Color.brandPrimary : Color.bgSurface)
+                        .cornerRadius(14)
+                    }
+                }
+                // Custom stepper
+                HStack(spacing: 16) {
+                    Button { studyMinutes = max(5, studyMinutes - 5) } label: {
+                        Image(systemName: "minus")
+                            .foregroundColor(.textMuted)
+                            .frame(width: 36, height: 36)
+                            .background(Color.bgSurface)
+                            .clipShape(Circle())
+                    }
+                    Text("\(studyMinutes) min")
+                        .font(.system(size: 32, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundColor(.textMain)
+                        .frame(minWidth: 110)
+                    Button { studyMinutes = min(120, studyMinutes + 5) } label: {
+                        Image(systemName: "plus")
+                            .foregroundColor(.textMuted)
+                            .frame(width: 36, height: 36)
+                            .background(Color.bgSurface)
+                            .clipShape(Circle())
+                    }
+                }
+            }
+
+            // Divider
+            Rectangle()
+                .fill(Color.surfaceMid)
+                .frame(height: 1)
+                .padding(.horizontal, 16)
+
+            // Break duration
+            VStack(spacing: 12) {
+                HStack {
+                    Image(systemName: "cup.and.saucer")
+                        .foregroundColor(.brandSecondary)
+                        .font(.system(size: 14))
+                    Text("Break Duration")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.textMuted)
+                }
+                HStack(spacing: 8) {
+                    ForEach(breakPresets, id: \.self) { preset in
+                        let selected = breakMinutes == preset
+                        Button("\(preset)m") {
+                            breakMinutes = preset
+                        }
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(selected ? .textInverse : .textMuted)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .background(selected ? Color.brandSecondary : Color.bgSurface)
+                        .cornerRadius(14)
+                    }
+                }
+                HStack(spacing: 16) {
+                    Button { breakMinutes = max(1, breakMinutes - 1) } label: {
+                        Image(systemName: "minus")
+                            .foregroundColor(.textMuted)
+                            .frame(width: 36, height: 36)
+                            .background(Color.bgSurface)
+                            .clipShape(Circle())
+                    }
+                    Text("\(breakMinutes) min")
+                        .font(.system(size: 32, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundColor(.textMain)
+                        .frame(minWidth: 110)
+                    Button { breakMinutes = min(60, breakMinutes + 1) } label: {
+                        Image(systemName: "plus")
+                            .foregroundColor(.textMuted)
+                            .frame(width: 36, height: 36)
+                            .background(Color.bgSurface)
+                            .clipShape(Circle())
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .background(Color.bgSurface)
+        .cornerRadius(32)
+        .padding(.horizontal, 24)
+    }
+}
+
+// MARK: - VIEW 2: ACTIVE SESSION (POMODORO)
+
+struct PomodoroSessionView: View {
+    @ObservedObject var recorder: SessionRecorder
+    @Binding var appView: ContentView.AppView
+    @AppStorage("settings.haptics") private var hapticsEnabled = true
+
+    @State private var pulse = false
+
+    private var isBreak: Bool { recorder.pomodoroPhase == .breakTime }
+    private var phaseColor: Color { isBreak ? .brandSecondary : .brandPrimary }
+    private var phaseLabel: String { isBreak ? "BREAK TIME" : "STUDY TIME" }
+
+    var body: some View {
+        ZStack {
+            // Background shifts subtly between study/break
+            (isBreak ? Color(hex: "080F0D") : Color.sessionBg)
+                .ignoresSafeArea()
+                .animation(.easeInOut(duration: 0.6), value: isBreak)
+
+            VStack(spacing: 0) {
+
+                // Top label
+                VStack(spacing: 4) {
+                    Text(phaseLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(phaseColor.opacity(0.7))
+                        .tracking(4)
+                        .animation(.easeInOut(duration: 0.3), value: isBreak)
+
+                    Text("Round \(recorder.pomodoroRound)")
+                        .font(.system(size: 12))
+                        .foregroundColor(.textDim)
+                }
+                .padding(.top, 64)
+
+                Spacer()
+
+                // Countdown ring
+                ZStack {
+                    Circle()
+                        .stroke(Color.surfaceMid, lineWidth: 8)
+                        .frame(width: 220, height: 220)
+
+                    Circle()
+                        .trim(from: 0, to: CGFloat(1 - recorder.pomodoroPhaseProgress))
+                        .stroke(phaseColor,
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                        .frame(width: 220, height: 220)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.linear(duration: 0.1), value: recorder.pomodoroPhaseProgress)
+
+                    VStack(spacing: 6) {
+                        Text(recorder.formattedPomodoroPhaseRemaining)
+                            .font(.system(size: 48, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundColor(.textMain)
+                        Text(isBreak ? "Break remaining" : "Study remaining")
+                            .font(.system(size: 12))
+                            .foregroundColor(.textDim)
+                    }
+                }
+                .scaleEffect(pulse ? 1.03 : 1.0)
+
+                // Total study banked
+                Text("Total studied: \(formattedStudyTime)")
+                    .font(.system(size: 13))
+                    .foregroundColor(.textDim)
+                    .padding(.top, 20)
+
+                Spacer()
+
+                // Status indicator (only during study phase)
+                if !isBreak {
+                    VStack(spacing: 8) {
+                        Image(systemName: "iphone")
+                            .font(.system(size: 32))
+                            .foregroundColor(statusColor)
+                            .rotationEffect(.degrees(180))
+                            .opacity(pulse ? 0.4 : 0.2)
+                            .scaleEffect(pulse ? 1.1 : 1.0)
+                        Text(recorder.isPaused ? "Paused" : statusText)
+                            .font(.system(size: 14))
+                            .foregroundColor(statusColor)
+                    }
+                    .padding(.bottom, 8)
+                } else {
+                    VStack(spacing: 6) {
+                        Image(systemName: "cup.and.saucer.fill")
+                            .font(.system(size: 32))
+                            .foregroundColor(.brandSecondary)
+                        Text("Sensors paused during break")
+                            .font(.system(size: 13))
+                            .foregroundColor(.textDim)
+                    }
+                    .padding(.bottom, 8)
+                }
+
+                // Controls
+                HStack(spacing: 12) {
+                    Button {
+                        recorder.isPaused ? recorder.resume() : recorder.pause()
+                    } label: {
+                        Image(systemName: recorder.isPaused ? "play.fill" : "pause.fill")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.textMuted)
+                            .frame(width: 44, height: 44)
+                            .background(Color.clear)
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(Color.surfaceMid, lineWidth: 1))
+                    }
+
+                    Button {
+                        recorder.finishSession()
+                        appView = .postSession
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "stop.fill").font(.system(size: 11))
+                            Text("End Pomodoro")
+                        }
+                    }
+                    .outlineButton()
+                }
+                .padding(.bottom, 64)
+            }
+        }
+        .onChange(of: recorder.pomodoroPhaseDidChange) { changed in
+            guard changed else { return }
+            if hapticsEnabled {
+                AudioToolbox.AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    AudioToolbox.AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                }
+            }
+            withAnimation(.easeInOut(duration: 0.4)) { pulse = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                withAnimation { pulse = false }
+            }
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 2).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+    }
+
+    private var formattedStudyTime: String {
+        let t = Int(recorder.pomodoroTotalStudyTime)
+        let m = t / 60
+        let s = t % 60
+        if m >= 60 {
+            return "\(m / 60)h \(m % 60)m"
+        }
+        return String(format: "%02d:%02d", m, s)
+    }
+
+    private var statusText: String {
+        switch recorder.phoneState {
+        case .focused:               return "Focused"
+        case .potentiallyDistracted: return "Potential distraction"
+        case .distracted:            return "Distracted"
+        }
+    }
+
+    private var statusColor: Color {
+        switch recorder.phoneState {
+        case .focused:               return .brandSecondary
+        case .potentiallyDistracted: return .brandWarning
+        case .distracted:            return .brandWarning
+        }
+    }
+}
+
+
 
 struct ActiveSessionView: View {
     @ObservedObject var recorder: SessionRecorder
@@ -594,7 +962,7 @@ struct PostSessionView: View {
                         id: UUID(),
                         date: Date(),
                         name: title,
-                        elapsedTime: recorder.elapsedTime,
+                        elapsedTime: recorder.elapsedTime,  // already set to study-only time for pomodoro in finishSession()
                         focusedTime: recorder.totalFocusedTime,
                         potentialDistractionTime: recorder.totalPotentialDistractionTime,
                         distractionTime: recorder.totalDistractionTime,

@@ -14,6 +14,13 @@ enum PhoneState {
     case distracted
 }
 
+// MARK: - Pomodoro Phase
+
+enum PomodoroPhase {
+    case study
+    case breakTime
+}
+
 @MainActor
 final class SessionRecorder: ObservableObject {
     
@@ -33,13 +40,13 @@ final class SessionRecorder: ObservableObject {
     
     @Published var timerDidComplete: Bool = false
     @Published var isTimerMode: Bool = false
-    var timerDuration: TimeInterval = 0   // total seconds set by user
+    var timerDuration: TimeInterval = 0
 
     var remainingTime: TimeInterval {
         max(0, timerDuration - elapsedTime)
     }
 
-    var timerProgress: Double {          // 0.0 → 1.0 (full → empty)
+    var timerProgress: Double {
         guard timerDuration > 0 else { return 0 }
         return min(1, elapsedTime / timerDuration)
     }
@@ -48,6 +55,52 @@ final class SessionRecorder: ObservableObject {
         let t = Int(remainingTime)
         return String(format: "%02d:%02d", t / 60, t % 60)
     }
+    
+    // MARK: - Pomodoro State
+    
+    @Published var isPomodoroMode: Bool = false
+    @Published var pomodoroPhase: PomodoroPhase = .study
+    @Published var pomodoroRound: Int = 1
+    @Published var pomodoroPhaseDidChange: Bool = false  // triggers haptic + UI
+    
+    /// Duration of one study block (set by user)
+    var pomodorStudyDuration: TimeInterval = 25 * 60
+    /// Duration of one break block (set by user)
+    var pomodoroBreakDuration: TimeInterval = 5 * 60
+    
+    /// Elapsed seconds within the *current* phase (study or break)
+    @Published var pomodoroPhaseElapsed: TimeInterval = 0
+    
+    /// How long the current phase lasts
+    var pomodoroCurrentPhaseDuration: TimeInterval {
+        pomodoroPhase == .study ? pomodorStudyDuration : pomodoroBreakDuration
+    }
+    
+    /// 0 → 1 progress within the current phase
+    var pomodoroPhaseProgress: Double {
+        guard pomodoroCurrentPhaseDuration > 0 else { return 0 }
+        return min(1, pomodoroPhaseElapsed / pomodoroCurrentPhaseDuration)
+    }
+    
+    var pomodoroPhaseRemaining: TimeInterval {
+        max(0, pomodoroCurrentPhaseDuration - pomodoroPhaseElapsed)
+    }
+    
+    var formattedPomodoroPhaseRemaining: String {
+        let t = Int(pomodoroPhaseRemaining)
+        return String(format: "%02d:%02d", t / 60, t % 60)
+    }
+    
+    /// Total *study* time accumulated across all completed study rounds plus current study round
+    var pomodoroTotalStudyTime: TimeInterval {
+        _pomodoroAccumulatedStudyTime + (pomodoroPhase == .study ? pomodoroPhaseElapsed : 0)
+    }
+    
+    private var _pomodoroAccumulatedStudyTime: TimeInterval = 0
+    private var pomodoroPhaseStartDate: Date?
+    private var pomodoroPhaseTimer: Timer?
+    
+    // MARK: - Existing internal state
     
     private var sessionStartDate: Date?
     private var pauseStartedAt: Date?
@@ -59,11 +112,12 @@ final class SessionRecorder: ObservableObject {
     
     private var cancellables = Set<AnyCancellable>()
     
-    // MARK: - Start
+    // MARK: - Start (standard)
     func start(timerDuration: TimeInterval = 0) {
         guard !isRunning else { return }
 
         isTimerMode = timerDuration > 0
+        isPomodoroMode = false
         self.timerDuration = timerDuration
         
         resetSessionDataOnly()
@@ -85,8 +139,50 @@ final class SessionRecorder: ObservableObject {
 
         if !luminance.hasCameraPermission {
             phoneState = .focused
+        } else {
+            updatePhoneState()
         }
-        else {
+    }
+    
+    // MARK: - Start Pomodoro
+    
+    func startPomodoro(studyMinutes: Int, breakMinutes: Int) {
+        guard !isRunning else { return }
+        
+        pomodorStudyDuration = TimeInterval(studyMinutes * 60)
+        pomodoroBreakDuration = TimeInterval(breakMinutes * 60)
+        
+        isPomodoroMode = true
+        isTimerMode = false
+        timerDuration = 0
+        pomodoroPhase = .study
+        pomodoroRound = 1
+        pomodoroPhaseElapsed = 0
+        _pomodoroAccumulatedStudyTime = 0
+        pomodoroPhaseDidChange = false
+        
+        resetSessionDataOnly()
+        
+        isRunning = true
+        isPaused = false
+        sessionStartDate = Date()
+        pauseStartedAt = nil
+        accumulatedPausedDuration = 0
+        pomodoroPhaseStartDate = Date()
+        
+        bindMotionCallbacks()
+        bindStateObservers()
+        
+        startTimer()
+        startStateTimer()
+        startPomodoroPhaseTimer()
+        
+        motion.startUpdates(hz: 50)
+        luminance.start()
+        
+        if !luminance.hasCameraPermission {
+            phoneState = .focused
+        } else {
             updatePhoneState()
         }
     }
@@ -105,6 +201,9 @@ final class SessionRecorder: ObservableObject {
         
         stateTimer?.invalidate()
         stateTimer = nil
+        
+        pomodoroPhaseTimer?.invalidate()
+        pomodoroPhaseTimer = nil
         
         motion.stopUpdates()
         luminance.stop()
@@ -126,13 +225,16 @@ final class SessionRecorder: ObservableObject {
         startTimer()
         startStateTimer()
         
+        if isPomodoroMode {
+            startPomodoroPhaseTimer()
+        }
+        
         motion.startUpdates(hz: 50)
         luminance.start()
 
         if !luminance.hasCameraPermission {
             phoneState = .focused
-        }
-        else {
+        } else {
             updatePhoneState()
         }
     }
@@ -144,6 +246,11 @@ final class SessionRecorder: ObservableObject {
         sampleStateTime()
         updateElapsedTime()
         
+        // For pomodoro: use accumulated study time as the "elapsed" time for the session record
+        if isPomodoroMode {
+            elapsedTime = pomodoroTotalStudyTime
+        }
+        
         isRunning = false
         isPaused = false
         
@@ -152,6 +259,9 @@ final class SessionRecorder: ObservableObject {
         
         stateTimer?.invalidate()
         stateTimer = nil
+        
+        pomodoroPhaseTimer?.invalidate()
+        pomodoroPhaseTimer = nil
         
         motion.stopUpdates()
         luminance.stop()
@@ -168,12 +278,22 @@ final class SessionRecorder: ObservableObject {
         stateTimer?.invalidate()
         stateTimer = nil
         
+        pomodoroPhaseTimer?.invalidate()
+        pomodoroPhaseTimer = nil
+        
         sessionStartDate = nil
         pauseStartedAt = nil
         accumulatedPausedDuration = 0
         lastStateSampleDate = nil
+        pomodoroPhaseStartDate = nil
         
         timerDidComplete = false
+        isPomodoroMode = false
+        pomodoroPhaseDidChange = false
+        pomodoroRound = 1
+        pomodoroPhase = .study
+        pomodoroPhaseElapsed = 0
+        _pomodoroAccumulatedStudyTime = 0
         
         resetSessionDataOnly()
         
@@ -190,6 +310,65 @@ final class SessionRecorder: ObservableObject {
         distractionCount = 0
         phoneState = .focused
     }
+    
+    // MARK: - Pomodoro Phase Timer
+    
+    private func startPomodoroPhaseTimer() {
+        pomodoroPhaseTimer?.invalidate()
+        pomodoroPhaseTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            self?.updatePomodoroPhaseTime()
+        }
+    }
+    
+    private func updatePomodoroPhaseTime() {
+        guard isRunning, !isPaused, isPomodoroMode else { return }
+        guard let start = pomodoroPhaseStartDate else { return }
+        
+        pomodoroPhaseElapsed = Date().timeIntervalSince(start)
+        
+        // Check if current phase is complete
+        if pomodoroPhaseElapsed >= pomodoroCurrentPhaseDuration {
+            transitionPomodoroPhase()
+        }
+    }
+    
+    private func transitionPomodoroPhase() {
+        if pomodoroPhase == .study {
+            // Study → Break: bank the study time
+            _pomodoroAccumulatedStudyTime += pomodorStudyDuration
+            pomodoroPhase = .breakTime
+            // Pause sensors during break
+            sampleStateTime()
+            motion.stopUpdates()
+            luminance.stop()
+            stateTimer?.invalidate()
+            stateTimer = nil
+        } else {
+            // Break → Study: resume sensors
+            pomodoroRound += 1
+            pomodoroPhase = .study
+            startStateTimer()
+            motion.startUpdates(hz: 50)
+            luminance.start()
+            if !luminance.hasCameraPermission {
+                phoneState = .focused
+            } else {
+                updatePhoneState()
+            }
+        }
+        
+        // Reset phase clock
+        pomodoroPhaseElapsed = 0
+        pomodoroPhaseStartDate = Date()
+        pomodoroPhaseDidChange = true
+        
+        // Reset flag after a beat so repeated transitions can re-trigger
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.pomodoroPhaseDidChange = false
+        }
+    }
+    
+    // MARK: - Motion / state helpers
     
     private func bindMotionCallbacks() {
         motion.onDistractionStart = { [weak self] in
@@ -219,6 +398,12 @@ final class SessionRecorder: ObservableObject {
     }
     
     private func updatePhoneState() {
+        // Don't update phone state during a pomodoro break
+        if isPomodoroMode && pomodoroPhase == .breakTime {
+            phoneState = .focused
+            return
+        }
+        
         guard luminance.hasCameraPermission else {
             phoneState = motion.isDistracted ? .distracted : .focused
             return
@@ -235,7 +420,6 @@ final class SessionRecorder: ObservableObject {
     
     private func startTimer() {
         timer?.invalidate()
-        
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.updateElapsedTime()
         }
@@ -264,14 +448,18 @@ final class SessionRecorder: ObservableObject {
         
         if isTimerMode, !timerDidComplete, elapsedTime >= timerDuration {
             timerDidComplete = true
-            pause()  // stops the clock without navigating away
+            pause()
         }
         
+        // For pomodoro mode, elapsedTime tracks wall clock (for display only);
+        // actual study time is tracked via pomodoroTotalStudyTime
         elapsedTime = now.timeIntervalSince(sessionStartDate) - accumulatedPausedDuration - pausedExtra
     }
     
     private func sampleStateTime() {
         guard isRunning, !isPaused else { return }
+        // Don't sample distraction during a pomodoro break
+        if isPomodoroMode && pomodoroPhase == .breakTime { return }
         
         let now = Date()
         
@@ -295,13 +483,12 @@ final class SessionRecorder: ObservableObject {
         }
     }
     
-    //used for post session view
+    // MARK: - Computed properties
+    
     var totalFocusedTime: TimeInterval {
         max(0, elapsedTime - totalPotentialDistractionTime - totalDistractionTime)
     }
     
-    // Weighted score:
-    // Potentially distracted counts half as much as fully distracted
     var focusScore: Int {
         guard elapsedTime > 0 else { return 0 }
         let weightedBadTime = totalPotentialDistractionTime * 0.5 + totalDistractionTime
